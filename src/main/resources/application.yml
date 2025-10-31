@@ -1,0 +1,39 @@
+micronaut:
+  application:
+    name: reliable-single
+  server:
+    port: 8080
+  test-resources:
+    enabled: false
+
+datasources:
+  default:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:reliable}
+    username: ${POSTGRES_USER:postgres}
+    password: ${POSTGRES_PASSWORD:postgres}
+    driverClassName: org.postgresql.Driver
+
+flyway:
+  datasources:
+    default:
+      enabled: true
+
+jms:
+  consumers:
+    enabled: true
+
+kafka:
+  bootstrap:
+    servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+  producers:
+    default:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+  required-topics: ${KAFKA_REQUIRED_TOPICS:events.CreateUser}
+  topic-partitions: ${KAFKA_TOPIC_PARTITIONS:3}
+  topic-replication-factor: ${KAFKA_TOPIC_REPLICATION_FACTOR:1}
+
+jpa:
+  default:
+    properties:
+      hibernate.hbm2ddl.auto: none

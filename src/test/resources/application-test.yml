@@ -1,0 +1,23 @@
+micronaut:
+  application:
+    name: reliable-single-test
+  server:
+    port: -1
+  executors:
+    scheduled:
+      type: scheduled
+      core-pool-size: 0
+  test:
+    resources:
+      enabled: true
+
+jpa:
+  default:
+    properties:
+      hibernate.hbm2ddl.auto: none
+
+flyway:
+  datasources:
+    default:
+      enabled: true
+      clean-disabled: false

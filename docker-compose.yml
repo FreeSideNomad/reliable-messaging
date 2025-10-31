@@ -1,0 +1,77 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: reliable-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-reliable}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ibmmq:
+    image: ibm-mqadvanced-server-dev:9.4.4.0-arm64
+    container_name: reliable-ibmmq
+    environment:
+      LICENSE: accept
+      MQ_QMGR_NAME: ${MQ_QMGR:-QM1}
+      MQ_APP_PASSWORD: ${MQ_APP_PASSWORD:-passw0rd}
+      MQ_ADMIN_PASSWORD: ${MQ_ADMIN_PASSWORD:-passw0rd}
+    ports:
+      - "${MQ_PORT:-1414}:1414"
+      - "9443:9443"
+    volumes:
+      - ibmmq-data:/mnt/mqm
+    healthcheck:
+      test: ["CMD", "dspmq"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: reliable-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092'
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
+      KAFKA_LISTENERS: 'PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
+    ports:
+      - "${KAFKA_PORT:-9092}:9092"
+      - "29092:29092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:latest
+    container_name: reliable-redpanda-console
+    environment:
+      KAFKA_BROKERS: kafka:29092
+    ports:
+      - "${REDPANDA_CONSOLE_PORT:-9900}:8080"
+    depends_on:
+      - kafka
+
+volumes:
+  postgres-data:
+  ibmmq-data:
+  kafka-data:
