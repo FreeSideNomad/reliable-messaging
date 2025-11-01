@@ -85,6 +85,7 @@ messaging:
 timeout:
   command-lease: ${COMMAND_LEASE_DURATION:5m}  # How long a command is leased for processing
   max-backoff: ${MAX_BACKOFF_DURATION:5m}      # Maximum backoff time for outbox retries
+  sync-wait: ${SYNC_WAIT_DURATION:1s}          # HTTP sync wait for command response (0 = fully async)
 
 # MQ configuration
 mq:
