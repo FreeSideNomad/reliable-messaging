@@ -1,102 +1,88 @@
 package com.acme.reliable.core;
 
 import com.acme.reliable.relay.OutboxRelay;
-import jakarta.transaction.Status;
-import jakarta.transaction.Synchronization;
-import jakarta.transaction.TransactionSynchronizationRegistry;
+import io.micronaut.transaction.TransactionOperations;
+import io.micronaut.transaction.TransactionStatus;
+import io.micronaut.transaction.support.TransactionSynchronization;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.sql.Connection;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.mockito.Mockito.*;
 
 class FastPathPublisherTest {
 
-    private TransactionSynchronizationRegistry tsr;
+    private TransactionOperations<Connection> transactionOps;
+    private TransactionStatus<Connection> transactionStatus;
     private OutboxRelay relay;
     private FastPathPublisher fastPath;
 
     @BeforeEach
     void setUp() {
-        tsr = mock(TransactionSynchronizationRegistry.class);
+        transactionOps = mock(TransactionOperations.class);
+        transactionStatus = mock(TransactionStatus.class);
         relay = mock(OutboxRelay.class);
-        fastPath = new FastPathPublisher(tsr, relay);
+        fastPath = new FastPathPublisher(transactionOps, relay);
     }
 
     @Test
     void testRegisterAfterCommitRegistersSync() {
         UUID outboxId = UUID.randomUUID();
+        when(transactionOps.findTransactionStatus()).thenReturn((Optional) Optional.of(transactionStatus));
 
         fastPath.registerAfterCommit(outboxId);
 
-        verify(tsr).registerInterposedSynchronization(any(Synchronization.class));
+        verify(transactionStatus).registerSynchronization(any(TransactionSynchronization.class));
     }
 
     @Test
-    void testAfterCompletionPublishesOnCommit() {
+    void testAfterCommitPublishes() {
         UUID outboxId = UUID.randomUUID();
-        ArgumentCaptor<Synchronization> captor = ArgumentCaptor.forClass(Synchronization.class);
+        when(transactionOps.findTransactionStatus()).thenReturn((Optional) Optional.of(transactionStatus));
+        ArgumentCaptor<TransactionSynchronization> captor = ArgumentCaptor.forClass(TransactionSynchronization.class);
 
         fastPath.registerAfterCommit(outboxId);
 
-        verify(tsr).registerInterposedSynchronization(captor.capture());
+        verify(transactionStatus).registerSynchronization(captor.capture());
 
-        Synchronization sync = captor.getValue();
-        sync.afterCompletion(Status.STATUS_COMMITTED);
+        TransactionSynchronization sync = captor.getValue();
+        sync.afterCommit();
 
         verify(relay).publishNow(outboxId);
     }
 
     @Test
-    void testAfterCompletionDoesNotPublishOnRollback() {
+    void testAfterCommitSwallowsExceptions() {
         UUID outboxId = UUID.randomUUID();
-        ArgumentCaptor<Synchronization> captor = ArgumentCaptor.forClass(Synchronization.class);
-
-        fastPath.registerAfterCommit(outboxId);
-
-        verify(tsr).registerInterposedSynchronization(captor.capture());
-
-        Synchronization sync = captor.getValue();
-        sync.afterCompletion(Status.STATUS_ROLLEDBACK);
-
-        verify(relay, never()).publishNow(any());
-    }
-
-    @Test
-    void testAfterCompletionSwallowsExceptions() {
-        UUID outboxId = UUID.randomUUID();
-        ArgumentCaptor<Synchronization> captor = ArgumentCaptor.forClass(Synchronization.class);
+        when(transactionOps.findTransactionStatus()).thenReturn((Optional) Optional.of(transactionStatus));
+        ArgumentCaptor<TransactionSynchronization> captor = ArgumentCaptor.forClass(TransactionSynchronization.class);
 
         doThrow(new RuntimeException("Network error")).when(relay).publishNow(any());
 
         fastPath.registerAfterCommit(outboxId);
 
-        verify(tsr).registerInterposedSynchronization(captor.capture());
+        verify(transactionStatus).registerSynchronization(captor.capture());
 
-        Synchronization sync = captor.getValue();
+        TransactionSynchronization sync = captor.getValue();
 
         // Should not throw
-        sync.afterCompletion(Status.STATUS_COMMITTED);
+        sync.afterCommit();
 
         verify(relay).publishNow(outboxId);
     }
 
     @Test
-    void testBeforeCompletionDoesNothing() {
+    void testNoOpWhenNoTransactionActive() {
         UUID outboxId = UUID.randomUUID();
-        ArgumentCaptor<Synchronization> captor = ArgumentCaptor.forClass(Synchronization.class);
+        when(transactionOps.findTransactionStatus()).thenReturn(Optional.empty());
 
         fastPath.registerAfterCommit(outboxId);
 
-        verify(tsr).registerInterposedSynchronization(captor.capture());
-
-        Synchronization sync = captor.getValue();
-
-        // Should not throw
-        sync.beforeCompletion();
-
+        verify(transactionStatus, never()).registerSynchronization(any());
         verifyNoInteractions(relay);
     }
 }

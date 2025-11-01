@@ -6,6 +6,18 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-reliable}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=1000"
+      - "-c"
+      - "shared_buffers=256MB"
+      - "-c"
+      - "effective_cache_size=1GB"
+      - "-c"
+      - "maintenance_work_mem=64MB"
+      - "-c"
+      - "work_mem=16MB"
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -24,6 +36,16 @@ services:
       MQ_QMGR_NAME: ${MQ_QMGR:-QM1}
       MQ_APP_PASSWORD: ${MQ_APP_PASSWORD:-passw0rd}
       MQ_ADMIN_PASSWORD: ${MQ_ADMIN_PASSWORD:-passw0rd}
+      # Performance tuning for high throughput (500 TPS target)
+      MQ_QMGR_MAXHANDS: 10000              # Max handles for high connection count
+      MQ_QMGR_MAXUMSGS: 50000              # Max uncommitted messages for better throughput
+      MQ_QMGR_MAXMSGL: 104857600           # Max message length (100MB)
+      MQ_QMGR_ACTCHL: 1000                 # Max active channels
+      MQ_QMGR_MAXCHL: 2000                 # Max channels
+      MQ_QMGR_CHAD: DISABLED               # Disable channel auto-definition for security
+      MQ_QMGR_SCYCASE: UPPER               # Security case sensitivity
+      MQ_LOGGING_CONSOLE_SOURCE: file      # Optimize logging
+      MQ_LOGGING_CONSOLE_FORMAT: basic     # Reduce logging overhead
     ports:
       - "${MQ_PORT:-1414}:1414"
       - "9443:9443"

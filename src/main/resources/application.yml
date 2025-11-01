@@ -3,6 +3,27 @@ micronaut:
     name: reliable-single
   server:
     port: 8080
+    # Thread pool configuration for high throughput
+    thread-selection: AUTO
+    netty:
+      # Worker threads - handles I/O operations
+      # Recommended: 2x CPU cores to 200 for high load
+      worker:
+        threads: ${NETTY_WORKER_THREADS:200}
+      # Parent threads - accepts connections
+      parent:
+        threads: ${NETTY_PARENT_THREADS:8}
+      # Buffer sizes for better throughput
+      max-initial-line-length: 8192
+      max-header-size: 16384
+      max-chunk-size: 16384
+      initial-buffer-size: 256
+      # Compression settings
+      compression-threshold: 1024
+      compression-level: 6
+      # HTTP/2 settings
+      http2:
+        max-concurrent-streams: 100
   test-resources:
     enabled: false
 
@@ -12,6 +33,19 @@ datasources:
     username: ${POSTGRES_USER:postgres}
     password: ${POSTGRES_PASSWORD:postgres}
     driverClassName: org.postgresql.Driver
+    # HikariCP connection pool configuration
+    # Formula: (core_count × 2) + effective_spindle_count
+    # For high load: 50-100 connections
+    maximum-pool-size: ${HIKARI_MAX_POOL_SIZE:100}
+    minimum-idle: ${HIKARI_MIN_IDLE:50}
+    # Connection timeout
+    connection-timeout: 30000
+    # Idle timeout (10 minutes)
+    idle-timeout: 600000
+    # Max lifetime (30 minutes)
+    max-lifetime: 1800000
+    # Leak detection threshold
+    leak-detection-threshold: 60000
 
 flyway:
   datasources:

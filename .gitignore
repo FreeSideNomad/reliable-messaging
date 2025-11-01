@@ -38,3 +38,6 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+
+# Load test results
+load-test-results/
