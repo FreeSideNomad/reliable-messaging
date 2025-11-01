@@ -59,7 +59,7 @@ public class Executor {
             ));
             fastPath.registerAfterCommit(replyId);
             fastPath.registerAfterCommit(eventId);
-            throw e;
+            // Don't re-throw for permanent failures - we want to commit the DLQ entry and failure state
         } catch (RetryableBusinessException | TransientException e) {
             commands.bumpRetry(env.commandId(), e.getMessage());
             throw e;

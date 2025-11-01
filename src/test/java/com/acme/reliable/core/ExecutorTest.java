@@ -87,9 +87,8 @@ class ExecutorTest {
         when(inboxStore.markIfAbsent(any(), any())).thenReturn(true);
         when(registry.invoke(any(), any())).thenThrow(new PermanentException("Test permanent error"));
 
-        assertThrows(PermanentException.class, () -> {
-            executor.process(env);
-        });
+        // Permanent failures should NOT throw - they should commit the failure state
+        executor.process(env);
 
         verify(commandStore).markRunning(eq(env.commandId()), any(Instant.class));
         verify(commandStore).markFailed(env.commandId(), "Test permanent error");
