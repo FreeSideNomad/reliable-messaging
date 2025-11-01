@@ -15,12 +15,14 @@ public class OutboxRelay {
     private final CommandQueue mq;
     private final EventPublisher kafka;
     private final long maxBackoffMillis;
+    private final int batchSize;
 
     public OutboxRelay(OutboxStore s, CommandQueue m, EventPublisher k, TimeoutConfig timeoutConfig) {
         this.store = s;
         this.mq = m;
         this.kafka = k;
         this.maxBackoffMillis = timeoutConfig.getMaxBackoffMillis();
+        this.batchSize = timeoutConfig.getOutboxBatchSize();
     }
 
     public void publishNow(UUID id) {
@@ -29,7 +31,7 @@ public class OutboxRelay {
 
     @Scheduled(fixedDelay = "30s")
     void sweepOnce() {
-        List<OutboxStore.OutboxRow> rows = store.claim(500, host());
+        List<OutboxStore.OutboxRow> rows = store.claim(batchSize, host());
         rows.forEach(this::sendAndMark);
     }
 

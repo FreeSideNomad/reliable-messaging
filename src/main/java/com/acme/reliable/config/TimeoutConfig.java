@@ -4,7 +4,7 @@ import io.micronaut.context.annotation.ConfigurationProperties;
 import java.time.Duration;
 
 /**
- * Configuration for various timeout and retry settings.
+ * Configuration for various timeout, retry, and performance settings.
  */
 @ConfigurationProperties("timeout")
 public class TimeoutConfig {
@@ -12,6 +12,7 @@ public class TimeoutConfig {
     private Duration commandLease = Duration.ofMinutes(5);
     private Duration maxBackoff = Duration.ofMinutes(5);
     private Duration syncWait = Duration.ofSeconds(1);
+    private int outboxBatchSize = 2000;  // 4x increased from 500 for high throughput
 
     public Duration getCommandLease() {
         return commandLease;
@@ -51,5 +52,13 @@ public class TimeoutConfig {
 
     public boolean isAsync() {
         return syncWait.isZero();
+    }
+
+    public int getOutboxBatchSize() {
+        return outboxBatchSize;
+    }
+
+    public void setOutboxBatchSize(int outboxBatchSize) {
+        this.outboxBatchSize = outboxBatchSize;
     }
 }

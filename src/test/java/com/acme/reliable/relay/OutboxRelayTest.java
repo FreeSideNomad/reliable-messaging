@@ -30,6 +30,7 @@ class OutboxRelayTest {
         eventPublisher = mock(EventPublisher.class);
         timeoutConfig = mock(TimeoutConfig.class);
         when(timeoutConfig.getMaxBackoffMillis()).thenReturn(300_000L);
+        when(timeoutConfig.getOutboxBatchSize()).thenReturn(2000);
 
         outboxRelay = new OutboxRelay(outboxStore, commandQueue, eventPublisher, timeoutConfig);
     }
@@ -149,11 +150,11 @@ class OutboxRelayTest {
             new OutboxStore.OutboxRow(id2, "event", "events.Test", "k2", "T2", "{}", Map.of(), 0)
         );
 
-        when(outboxStore.claim(eq(500), any())).thenReturn(rows);
+        when(outboxStore.claim(eq(2000), any())).thenReturn(rows);
 
         outboxRelay.sweepOnce();
 
-        verify(outboxStore).claim(eq(500), any());
+        verify(outboxStore).claim(eq(2000), any());
         verify(commandQueue).send("Q1", "{}", Map.of());
         verify(eventPublisher).publish("events.Test", "k2", "{}", Map.of());
         verify(outboxStore).markPublished(id1);
