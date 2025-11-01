@@ -1,5 +1,6 @@
 package com.acme.reliable.relay;
 
+import com.acme.reliable.config.TimeoutConfig;
 import com.acme.reliable.spi.CommandQueue;
 import com.acme.reliable.spi.EventPublisher;
 import com.acme.reliable.spi.OutboxStore;
@@ -19,6 +20,7 @@ class OutboxRelayTest {
     private OutboxStore outboxStore;
     private CommandQueue commandQueue;
     private EventPublisher eventPublisher;
+    private TimeoutConfig timeoutConfig;
     private OutboxRelay outboxRelay;
 
     @BeforeEach
@@ -26,7 +28,10 @@ class OutboxRelayTest {
         outboxStore = mock(OutboxStore.class);
         commandQueue = mock(CommandQueue.class);
         eventPublisher = mock(EventPublisher.class);
-        outboxRelay = new OutboxRelay(outboxStore, commandQueue, eventPublisher);
+        timeoutConfig = mock(TimeoutConfig.class);
+        when(timeoutConfig.getMaxBackoffMillis()).thenReturn(300_000L);
+
+        outboxRelay = new OutboxRelay(outboxStore, commandQueue, eventPublisher, timeoutConfig);
     }
 
     @Test

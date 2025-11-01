@@ -1,6 +1,8 @@
 package com.acme.reliable.core;
 
+import com.acme.reliable.config.MessagingConfig;
 import com.acme.reliable.spi.OutboxStore;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -8,15 +10,31 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class OutboxTest {
+
+    private Outbox outbox;
+    private MessagingConfig messagingConfig;
+
+    @BeforeEach
+    void setUp() {
+        messagingConfig = mock(MessagingConfig.class);
+        MessagingConfig.QueueNaming queueNaming = mock(MessagingConfig.QueueNaming.class);
+        when(messagingConfig.getQueueNaming()).thenReturn(queueNaming);
+        when(queueNaming.buildCommandQueue("CreateUser")).thenReturn("APP.CMD.CreateUser.Q");
+        when(queueNaming.getReplyQueue()).thenReturn("APP.CMD.REPLY.Q");
+
+        outbox = new Outbox(messagingConfig);
+    }
 
     @Test
     void testRowCommandRequested() {
         UUID commandId = UUID.randomUUID();
         Map<String, String> reply = Map.of("mode", "mq", "replyTo", "MY.Q");
 
-        OutboxStore.OutboxRow row = Outbox.rowCommandRequested(
+        OutboxStore.OutboxRow row = outbox.rowCommandRequested(
             "CreateUser",
             commandId,
             "user-123",
@@ -40,7 +58,7 @@ class OutboxTest {
 
     @Test
     void testRowKafkaEvent() {
-        OutboxStore.OutboxRow row = Outbox.rowKafkaEvent(
+        OutboxStore.OutboxRow row = outbox.rowKafkaEvent(
             "events.UserCreated",
             "user-456",
             "UserCreated",
@@ -72,7 +90,7 @@ class OutboxTest {
             "{}"
         );
 
-        OutboxStore.OutboxRow row = Outbox.rowMqReply(
+        OutboxStore.OutboxRow row = outbox.rowMqReply(
             env,
             "CommandCompleted",
             "{\"result\":\"success\"}"
@@ -104,7 +122,7 @@ class OutboxTest {
             "{}"
         );
 
-        OutboxStore.OutboxRow row = Outbox.rowMqReply(
+        OutboxStore.OutboxRow row = outbox.rowMqReply(
             env,
             "CommandFailed",
             "{\"error\":\"test\"}"

@@ -1,5 +1,6 @@
 package com.acme.reliable.relay;
 
+import com.acme.reliable.config.TimeoutConfig;
 import com.acme.reliable.spi.OutboxStore;
 import com.acme.reliable.spi.CommandQueue;
 import com.acme.reliable.spi.EventPublisher;
@@ -13,11 +14,13 @@ public class OutboxRelay {
     private final OutboxStore store;
     private final CommandQueue mq;
     private final EventPublisher kafka;
+    private final long maxBackoffMillis;
 
-    public OutboxRelay(OutboxStore s, CommandQueue m, EventPublisher k) {
+    public OutboxRelay(OutboxStore s, CommandQueue m, EventPublisher k, TimeoutConfig timeoutConfig) {
         this.store = s;
         this.mq = m;
         this.kafka = k;
+        this.maxBackoffMillis = timeoutConfig.getMaxBackoffMillis();
     }
 
     public void publishNow(UUID id) {
@@ -39,7 +42,7 @@ public class OutboxRelay {
             }
             store.markPublished(r.id());
         } catch (Exception e) {
-            long backoff = Math.min(300_000L, (long)Math.pow(2, Math.max(1, r.attempts() + 1)) * 1000L);
+            long backoff = Math.min(maxBackoffMillis, (long)Math.pow(2, Math.max(1, r.attempts() + 1)) * 1000L);
             store.reschedule(r.id(), backoff, e.toString());
         }
     }

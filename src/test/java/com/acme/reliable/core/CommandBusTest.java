@@ -17,6 +17,7 @@ class CommandBusTest {
 
     private CommandStore commandStore;
     private OutboxStore outboxStore;
+    private Outbox outbox;
     private FastPathPublisher fastPath;
     private CommandBus commandBus;
 
@@ -24,17 +25,20 @@ class CommandBusTest {
     void setUp() {
         commandStore = mock(CommandStore.class);
         outboxStore = mock(OutboxStore.class);
+        outbox = mock(Outbox.class);
         fastPath = mock(FastPathPublisher.class);
-        commandBus = new CommandBus(commandStore, outboxStore, fastPath);
+        commandBus = new CommandBus(commandStore, outboxStore, outbox, fastPath);
     }
 
     @Test
     void testAcceptCommand() {
         UUID commandId = UUID.randomUUID();
         UUID outboxId = UUID.randomUUID();
+        OutboxStore.OutboxRow mockRow = mock(OutboxStore.OutboxRow.class);
 
         when(commandStore.existsByIdempotencyKey("test-idem")).thenReturn(false);
         when(commandStore.savePending(any(), any(), any(), any(), any())).thenReturn(commandId);
+        when(outbox.rowCommandRequested(any(), any(), any(), any(), any())).thenReturn(mockRow);
         when(outboxStore.addReturningId(any())).thenReturn(outboxId);
 
         UUID result = commandBus.accept(
@@ -55,7 +59,8 @@ class CommandBusTest {
             eq("{\"data\":\"test\"}"),
             any()
         );
-        verify(outboxStore).addReturningId(any(OutboxStore.OutboxRow.class));
+        verify(outbox).rowCommandRequested(eq("TestCommand"), eq(commandId), eq("test-key"), eq("{\"data\":\"test\"}"), any());
+        verify(outboxStore).addReturningId(mockRow);
         verify(fastPath).registerAfterCommit(outboxId);
     }
 
@@ -88,7 +93,21 @@ class CommandBusTest {
         when(commandStore.savePending(any(), any(), any(), any(), any())).thenReturn(commandId);
         when(outboxStore.addReturningId(any())).thenReturn(outboxId);
 
-        ArgumentCaptor<OutboxStore.OutboxRow> captor = ArgumentCaptor.forClass(OutboxStore.OutboxRow.class);
+        ArgumentCaptor<OutboxStore.OutboxRow> outboxCaptor = ArgumentCaptor.forClass(OutboxStore.OutboxRow.class);
+
+        // Create a real row to return from the mock
+        OutboxStore.OutboxRow expectedRow = new OutboxStore.OutboxRow(
+            UUID.randomUUID(),
+            "command",
+            "APP.CMD.CreateUser.Q",
+            "user-456",
+            "CommandRequested",
+            "{\"username\":\"alice\"}",
+            Map.of("commandId", commandId.toString(), "commandName", "CreateUser", "businessKey", "user-456", "replyTo", "MY.REPLY.Q"),
+            0
+        );
+
+        when(outbox.rowCommandRequested(any(), any(), any(), any(), any())).thenReturn(expectedRow);
 
         commandBus.accept(
             "CreateUser",
@@ -98,9 +117,16 @@ class CommandBusTest {
             Map.of("replyTo", "MY.REPLY.Q")
         );
 
-        verify(outboxStore).addReturningId(captor.capture());
+        verify(outbox).rowCommandRequested(
+            eq("CreateUser"),
+            eq(commandId),
+            eq("user-456"),
+            eq("{\"username\":\"alice\"}"),
+            any()
+        );
+        verify(outboxStore).addReturningId(outboxCaptor.capture());
 
-        OutboxStore.OutboxRow row = captor.getValue();
+        OutboxStore.OutboxRow row = outboxCaptor.getValue();
         assertEquals("command", row.category());
         assertEquals("APP.CMD.CreateUser.Q", row.topic());
         assertEquals("user-456", row.key());

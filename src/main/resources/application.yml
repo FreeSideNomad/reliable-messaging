@@ -71,3 +71,21 @@ jpa:
   default:
     properties:
       hibernate.hbm2ddl.auto: none
+
+# Messaging configuration
+messaging:
+  queue-naming:
+    command-prefix: ${MQ_COMMAND_PREFIX:APP.CMD.}
+    queue-suffix: ${MQ_QUEUE_SUFFIX:.Q}
+    reply-queue: ${MQ_REPLY_QUEUE:APP.CMD.REPLY.Q}
+  topic-naming:
+    event-prefix: ${KAFKA_EVENT_PREFIX:events.}
+
+# Timeout configuration
+timeout:
+  command-lease: ${COMMAND_LEASE_DURATION:5m}  # How long a command is leased for processing
+  max-backoff: ${MAX_BACKOFF_DURATION:5m}      # Maximum backoff time for outbox retries
+
+# MQ configuration
+mq:
+  required-queues: ${MQ_REQUIRED_QUEUES:APP.CMD.CreateUser.Q,APP.CMD.REPLY.Q}

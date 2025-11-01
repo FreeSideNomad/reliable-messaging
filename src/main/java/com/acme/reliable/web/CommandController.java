@@ -1,5 +1,6 @@
 package com.acme.reliable.web;
 
+import com.acme.reliable.config.MessagingConfig;
 import com.acme.reliable.core.CommandBus;
 import com.acme.reliable.core.ResponseRegistry;
 import io.micronaut.http.HttpResponse;
@@ -15,10 +16,12 @@ import java.util.concurrent.TimeoutException;
 public class CommandController {
     private final CommandBus bus;
     private final ResponseRegistry responses;
+    private final String defaultReplyQueue;
 
-    public CommandController(CommandBus b, ResponseRegistry r) {
+    public CommandController(CommandBus b, ResponseRegistry r, MessagingConfig messagingConfig) {
         this.bus = b;
         this.responses = r;
+        this.defaultReplyQueue = messagingConfig.getQueueNaming().getReplyQueue();
     }
 
     @Post("/{name}")
@@ -26,10 +29,12 @@ public class CommandController {
             @PathVariable String name,
             @Header("Idempotency-Key") String idem,
             @Body String payload,
-            @Header(value = "Reply-To", defaultValue = "APP.CMD.REPLY.Q") String replyTo) {
+            @Header(value = "Reply-To", defaultValue = "") String replyTo) {
+
+        String effectiveReplyQueue = (replyTo != null && !replyTo.isBlank()) ? replyTo : defaultReplyQueue;
 
         var cmdId = bus.accept(name, idem, businessKey(payload), payload,
-                java.util.Map.of("mode", "mq", "replyTo", replyTo));
+                java.util.Map.of("mode", "mq", "replyTo", effectiveReplyQueue));
 
         // Register for response and wait up to 1 second
         var future = responses.register(cmdId);

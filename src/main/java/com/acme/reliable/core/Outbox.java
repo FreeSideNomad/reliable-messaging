@@ -1,15 +1,25 @@
 package com.acme.reliable.core;
 
+import com.acme.reliable.config.MessagingConfig;
 import com.acme.reliable.spi.OutboxStore.OutboxRow;
+import jakarta.inject.Singleton;
 import java.util.Map;
 import java.util.UUID;
 
+@Singleton
 public final class Outbox {
-    public static OutboxRow rowCommandRequested(String name, UUID id, String key, String payload, Map<String,String> reply) {
+
+    private final MessagingConfig config;
+
+    public Outbox(MessagingConfig config) {
+        this.config = config;
+    }
+
+    public OutboxRow rowCommandRequested(String name, UUID id, String key, String payload, Map<String,String> reply) {
         return new OutboxRow(
             UUID.randomUUID(),
             "command",
-            "APP.CMD." + name + ".Q",
+            config.getQueueNaming().buildCommandQueue(name),
             key,
             "CommandRequested",
             payload,
@@ -25,7 +35,7 @@ public final class Outbox {
         );
     }
 
-    public static OutboxRow rowKafkaEvent(String topic, String key, String type, String payload) {
+    public OutboxRow rowKafkaEvent(String topic, String key, String type, String payload) {
         return new OutboxRow(
             UUID.randomUUID(),
             "event",
@@ -38,8 +48,8 @@ public final class Outbox {
         );
     }
 
-    public static OutboxRow rowMqReply(Envelope env, String type, String payload) {
-        String replyTo = env.headers().getOrDefault("replyTo", "APP.CMD.REPLY.Q");
+    public OutboxRow rowMqReply(Envelope env, String type, String payload) {
+        String replyTo = env.headers().getOrDefault("replyTo", config.getQueueNaming().getReplyQueue());
         return new OutboxRow(
             UUID.randomUUID(),
             "reply",

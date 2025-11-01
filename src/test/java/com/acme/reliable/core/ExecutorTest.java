@@ -1,5 +1,7 @@
 package com.acme.reliable.core;
 
+import com.acme.reliable.config.MessagingConfig;
+import com.acme.reliable.config.TimeoutConfig;
 import com.acme.reliable.spi.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,9 +20,12 @@ class ExecutorTest {
     private InboxStore inboxStore;
     private CommandStore commandStore;
     private OutboxStore outboxStore;
+    private Outbox outbox;
     private DlqStore dlqStore;
     private Executor.HandlerRegistry registry;
     private FastPathPublisher fastPath;
+    private TimeoutConfig timeoutConfig;
+    private MessagingConfig messagingConfig;
     private Executor executor;
 
     @BeforeEach
@@ -28,10 +33,20 @@ class ExecutorTest {
         inboxStore = mock(InboxStore.class);
         commandStore = mock(CommandStore.class);
         outboxStore = mock(OutboxStore.class);
+        outbox = mock(Outbox.class);
         dlqStore = mock(DlqStore.class);
         registry = mock(Executor.HandlerRegistry.class);
         fastPath = mock(FastPathPublisher.class);
-        executor = new Executor(inboxStore, commandStore, outboxStore, dlqStore, registry, fastPath, 300);
+        timeoutConfig = mock(TimeoutConfig.class);
+        messagingConfig = mock(MessagingConfig.class);
+
+        when(timeoutConfig.getCommandLeaseSeconds()).thenReturn(300L);
+
+        MessagingConfig.TopicNaming topicNaming = mock(MessagingConfig.TopicNaming.class);
+        when(messagingConfig.getTopicNaming()).thenReturn(topicNaming);
+        when(topicNaming.buildEventTopic(any())).thenAnswer(invocation -> "events." + invocation.getArgument(0));
+
+        executor = new Executor(inboxStore, commandStore, outboxStore, outbox, dlqStore, registry, fastPath, timeoutConfig, messagingConfig);
     }
 
     private Envelope createEnvelope(String name, String payload) {
@@ -52,9 +67,14 @@ class ExecutorTest {
     @Test
     void testProcessSuccess() {
         Envelope env = createEnvelope("TestCommand", "{\"data\":\"test\"}");
+        OutboxStore.OutboxRow mockReply = mock(OutboxStore.OutboxRow.class);
+        OutboxStore.OutboxRow mockEvent = mock(OutboxStore.OutboxRow.class);
 
         when(inboxStore.markIfAbsent(env.messageId().toString(), "CommandExecutor")).thenReturn(true);
         when(registry.invoke("TestCommand", "{\"data\":\"test\"}")).thenReturn("{\"result\":\"success\"}");
+        when(outbox.rowMqReply(any(), eq("CommandCompleted"), eq("{\"result\":\"success\"}"))).thenReturn(mockReply);
+        when(outbox.rowKafkaEvent(any(), any(), eq("CommandCompleted"), any())).thenReturn(mockEvent);
+        when(outboxStore.addReturningId(any())).thenReturn(UUID.randomUUID());
 
         executor.process(env);
 
@@ -64,6 +84,8 @@ class ExecutorTest {
         verify(commandStore).markSucceeded(env.commandId());
 
         // Verify MQ reply and Kafka event were created
+        verify(outbox).rowMqReply(env, "CommandCompleted", "{\"result\":\"success\"}");
+        verify(outbox).rowKafkaEvent(eq("events.TestCommand"), eq("test-key"), eq("CommandCompleted"), eq("{\"aggregateKey\":\"test-key\",\"version\":1}"));
         verify(outboxStore, times(2)).addReturningId(any(OutboxStore.OutboxRow.class));
     }
 
@@ -83,9 +105,14 @@ class ExecutorTest {
     @Test
     void testProcessPermanentFailure() {
         Envelope env = createEnvelope("TestCommand", "{}");
+        OutboxStore.OutboxRow mockReply = mock(OutboxStore.OutboxRow.class);
+        OutboxStore.OutboxRow mockEvent = mock(OutboxStore.OutboxRow.class);
 
         when(inboxStore.markIfAbsent(any(), any())).thenReturn(true);
         when(registry.invoke(any(), any())).thenThrow(new PermanentException("Test permanent error"));
+        when(outbox.rowMqReply(any(), eq("CommandFailed"), any())).thenReturn(mockReply);
+        when(outbox.rowKafkaEvent(any(), any(), eq("CommandFailed"), any())).thenReturn(mockEvent);
+        when(outboxStore.addReturningId(any())).thenReturn(UUID.randomUUID());
 
         // Permanent failures should NOT throw - they should commit the failure state
         executor.process(env);
@@ -105,6 +132,8 @@ class ExecutorTest {
         );
 
         // Verify failed reply and event
+        verify(outbox).rowMqReply(any(), eq("CommandFailed"), any());
+        verify(outbox).rowKafkaEvent(any(), any(), eq("CommandFailed"), any());
         verify(outboxStore, times(2)).addReturningId(any(OutboxStore.OutboxRow.class));
     }
 
@@ -145,8 +174,33 @@ class ExecutorTest {
     void testProcessCreatesCorrectReply() {
         Envelope env = createEnvelope("TestCommand", "{}");
 
+        OutboxStore.OutboxRow expectedReply = new OutboxStore.OutboxRow(
+            UUID.randomUUID(),
+            "reply",
+            "TEST.REPLY.Q",
+            "test-key",
+            "CommandCompleted",
+            "{\"userId\":\"123\"}",
+            Map.of(),
+            0
+        );
+
+        OutboxStore.OutboxRow expectedEvent = new OutboxStore.OutboxRow(
+            UUID.randomUUID(),
+            "event",
+            "events.TestCommand",
+            "test-key",
+            "CommandCompleted",
+            "{\"aggregateKey\":\"test-key\",\"version\":1}",
+            Map.of(),
+            0
+        );
+
         when(inboxStore.markIfAbsent(any(), any())).thenReturn(true);
         when(registry.invoke(any(), any())).thenReturn("{\"userId\":\"123\"}");
+        when(outbox.rowMqReply(any(), eq("CommandCompleted"), eq("{\"userId\":\"123\"}"))).thenReturn(expectedReply);
+        when(outbox.rowKafkaEvent(any(), any(), eq("CommandCompleted"), any())).thenReturn(expectedEvent);
+        when(outboxStore.addReturningId(any())).thenReturn(UUID.randomUUID());
 
         ArgumentCaptor<OutboxStore.OutboxRow> captor = ArgumentCaptor.forClass(OutboxStore.OutboxRow.class);
 
@@ -166,5 +220,6 @@ class ExecutorTest {
         assertEquals("event", event.category());
         assertEquals("events.TestCommand", event.topic());
         assertEquals("CommandCompleted", event.type());
+        assertEquals("{\"aggregateKey\":\"test-key\",\"version\":1}", event.payload());
     }
 }

@@ -1,5 +1,7 @@
 package com.acme.reliable.core;
 
+import com.acme.reliable.config.MessagingConfig;
+import com.acme.reliable.config.TimeoutConfig;
 import com.acme.reliable.spi.*;
 import jakarta.inject.Singleton;
 import jakarta.transaction.Transactional;
@@ -9,24 +11,26 @@ import java.time.Instant;
 public class Executor {
     private final InboxStore inbox;
     private final CommandStore commands;
-    private final OutboxStore outbox;
+    private final OutboxStore outboxStore;
+    private final Outbox outbox;
     private final DlqStore dlq;
     private final HandlerRegistry registry;
     private final FastPathPublisher fastPath;
+    private final MessagingConfig messagingConfig;
     private final long leaseSeconds;
 
-    public Executor(InboxStore i, CommandStore c, OutboxStore o, DlqStore d, HandlerRegistry r, FastPathPublisher f) {
-        this(i, c, o, d, r, f, 300); // default 5 minutes
-    }
-
-    public Executor(InboxStore i, CommandStore c, OutboxStore o, DlqStore d, HandlerRegistry r, FastPathPublisher f, long leaseSeconds) {
+    public Executor(InboxStore i, CommandStore c, OutboxStore os, Outbox o, DlqStore d,
+                    HandlerRegistry r, FastPathPublisher f, TimeoutConfig timeoutConfig,
+                    MessagingConfig messagingConfig) {
         this.inbox = i;
         this.commands = c;
+        this.outboxStore = os;
         this.outbox = o;
         this.dlq = d;
         this.registry = r;
         this.fastPath = f;
-        this.leaseSeconds = leaseSeconds;
+        this.messagingConfig = messagingConfig;
+        this.leaseSeconds = timeoutConfig.getCommandLeaseSeconds();
     }
 
     @Transactional
@@ -38,9 +42,9 @@ public class Executor {
         try {
             String resultJson = registry.invoke(env.name(), env.payload());
             commands.markSucceeded(env.commandId());
-            var replyId = outbox.addReturningId(Outbox.rowMqReply(env, "CommandCompleted", resultJson));
-            var eventId = outbox.addReturningId(Outbox.rowKafkaEvent(
-                "events." + env.name(),
+            var replyId = outboxStore.addReturningId(outbox.rowMqReply(env, "CommandCompleted", resultJson));
+            var eventId = outboxStore.addReturningId(outbox.rowKafkaEvent(
+                messagingConfig.getTopicNaming().buildEventTopic(env.name()),
                 env.key(),
                 "CommandCompleted",
                 Aggregates.snapshot(env.key())
@@ -50,9 +54,9 @@ public class Executor {
         } catch (PermanentException e) {
             commands.markFailed(env.commandId(), e.getMessage());
             dlq.park(env.commandId(), env.name(), env.key(), env.payload(), "FAILED", "Permanent", e.getMessage(), 0, "worker");
-            var replyId = outbox.addReturningId(Outbox.rowMqReply(env, "CommandFailed", Jsons.of("error", e.getMessage())));
-            var eventId = outbox.addReturningId(Outbox.rowKafkaEvent(
-                "events." + env.name(),
+            var replyId = outboxStore.addReturningId(outbox.rowMqReply(env, "CommandFailed", Jsons.of("error", e.getMessage())));
+            var eventId = outboxStore.addReturningId(outbox.rowKafkaEvent(
+                messagingConfig.getTopicNaming().buildEventTopic(env.name()),
                 env.key(),
                 "CommandFailed",
                 Jsons.of("error", e.getMessage())

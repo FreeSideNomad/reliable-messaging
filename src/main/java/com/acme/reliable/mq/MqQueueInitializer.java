@@ -27,12 +27,15 @@ import com.ibm.mq.constants.MQConstants;
 public class MqQueueInitializer implements BeanCreatedEventListener<JMSConnectionPool> {
 
     private static final Logger LOG = LoggerFactory.getLogger(MqQueueInitializer.class);
-    private static final String[] REQUIRED_QUEUES = {
-        "APP.CMD.CreateUser.Q",
-        "APP.CMD.REPLY.Q"
-    };
+    private static final int MQ_ERROR_UNKNOWN_OBJECT = 2085;
 
+    private final String[] requiredQueues;
     private boolean validated = false;
+
+    public MqQueueInitializer(
+            @io.micronaut.context.annotation.Value("${mq.required-queues:APP.CMD.CreateUser.Q,APP.CMD.REPLY.Q}") String requiredQueuesConfig) {
+        this.requiredQueues = requiredQueuesConfig.split(",");
+    }
 
     @Override
     public JMSConnectionPool onCreated(BeanCreatedEvent<JMSConnectionPool> event) {
@@ -44,7 +47,7 @@ public class MqQueueInitializer implements BeanCreatedEventListener<JMSConnectio
             try (var connection = pool.createConnection();
                  var session = connection.createSession(false, Session.AUTO_ACKNOWLEDGE)) {
 
-                for (String queueName : REQUIRED_QUEUES) {
+                for (String queueName : requiredQueues) {
                     try {
                         // Try to access the queue
                         var queue = session.createQueue(queueName);
@@ -84,7 +87,7 @@ public class MqQueueInitializer implements BeanCreatedEventListener<JMSConnectio
         }
         return e.getMessage() != null &&
                (e.getMessage().contains("MQRC_UNKNOWN_OBJECT_NAME") ||
-                e.getMessage().contains("2085"));
+                e.getMessage().contains(String.valueOf(MQ_ERROR_UNKNOWN_OBJECT)));
     }
 
     private void createQueue(jakarta.jms.Connection connection, String queueName) throws Exception {
