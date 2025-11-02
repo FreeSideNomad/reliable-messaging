@@ -5,6 +5,7 @@ import com.acme.reliable.spi.OutboxStore;
 import com.acme.reliable.spi.CommandQueue;
 import com.acme.reliable.spi.EventPublisher;
 import io.micronaut.scheduling.annotation.Scheduled;
+import io.micronaut.transaction.annotation.Transactional;
 import jakarta.inject.Singleton;
 import java.util.List;
 import java.util.UUID;
@@ -25,11 +26,13 @@ public class OutboxRelay {
         this.batchSize = timeoutConfig.getOutboxBatchSize();
     }
 
+    @Transactional
     public void publishNow(UUID id) {
         store.claimOne(id).ifPresent(this::sendAndMark);
     }
 
-    @Scheduled(fixedDelay = "30s")
+    @Transactional
+    @Scheduled(fixedDelay = "${timeout.outbox-sweep-interval:30s}")
     void sweepOnce() {
         List<OutboxStore.OutboxRow> rows = store.claim(batchSize, host());
         rows.forEach(this::sendAndMark);

@@ -11,7 +11,8 @@ public class TimeoutConfig {
 
     private Duration commandLease = Duration.ofMinutes(5);
     private Duration maxBackoff = Duration.ofMinutes(5);
-    private Duration syncWait = Duration.ofSeconds(1);
+    private Duration syncWait = Duration.ZERO;  // Async by default (no blocking wait)
+    private Duration outboxSweepInterval = Duration.ofSeconds(30);
     private int outboxBatchSize = 2000;  // 4x increased from 500 for high throughput
 
     public Duration getCommandLease() {
@@ -60,5 +61,17 @@ public class TimeoutConfig {
 
     public void setOutboxBatchSize(int outboxBatchSize) {
         this.outboxBatchSize = outboxBatchSize;
+    }
+
+    public Duration getOutboxSweepInterval() {
+        return outboxSweepInterval;
+    }
+
+    public void setOutboxSweepInterval(Duration outboxSweepInterval) {
+        this.outboxSweepInterval = outboxSweepInterval;
+    }
+
+    public String getOutboxSweepIntervalString() {
+        return outboxSweepInterval.toMillis() + "ms";
     }
 }

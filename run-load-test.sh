@@ -93,14 +93,70 @@ check_dependencies() {
 check_app_running() {
     log_info "Checking if application is running at $APP_URL..."
 
-    # Check if server responds (any HTTP response is OK, even 404)
-    if ! curl -s -o /dev/null -w "%{http_code}" "$APP_URL" 2>&1 | grep -q "[0-9][0-9][0-9]"; then
-        log_error "Application is not running at $APP_URL"
-        log_info "Start the application with: mvn mn:run"
+    local MAX_RETRIES=30
+    local RETRY_COUNT=0
+    local WAIT_SECONDS=2
+
+    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        # Try to connect to the health endpoint, suppress curl errors
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "$APP_URL/health" 2>/dev/null || echo "000")
+
+        # Check if we got a valid HTTP response code (2xx, 3xx, 4xx, 5xx)
+        if [ "$HTTP_CODE" != "000" ] && [ "$HTTP_CODE" != "" ]; then
+            if echo "$HTTP_CODE" | grep -qE "^[2-5][0-9][0-9]$"; then
+                log_success "Application is running (HTTP $HTTP_CODE)"
+                return 0
+            fi
+        fi
+
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+            echo -ne "  ⏳ Waiting for application... attempt $RETRY_COUNT/$MAX_RETRIES (got: $HTTP_CODE)\r"
+            sleep $WAIT_SECONDS
+        fi
+    done
+
+    echo "" # New line after progress
+    log_error "Application is not responding at $APP_URL after $((MAX_RETRIES * WAIT_SECONDS)) seconds"
+    log_info "Last response code: $HTTP_CODE"
+    log_info ""
+    log_info "Troubleshooting:"
+    log_info "  1. Start the application: mvn mn:run"
+    log_info "  2. Check application logs for errors"
+    log_info "  3. Verify port 8080 is not blocked: lsof -ti:8080"
+    log_info "  4. Test manually: curl -v $APP_URL/health"
+    exit 1
+}
+
+verify_api_working() {
+    log_info "Verifying API is functional..."
+
+    # Make a test API call to ensure endpoint is working
+    local TEMP_FILE=$(mktemp)
+    local HTTP_CODE=$(curl -s -w "%{http_code}" -o "$TEMP_FILE" -X POST "$APP_URL/commands/CreateUser" \
+        -H "Content-Type: application/json" \
+        -H "Idempotency-Key: healthcheck-$(date +%s)" \
+        -d '{"username":"healthcheck-user"}' 2>/dev/null || echo "000")
+
+    local RESPONSE_BODY=$(cat "$TEMP_FILE" 2>/dev/null)
+    rm -f "$TEMP_FILE"
+
+    # Accept 200, 201, or 202 as success
+    if echo "$HTTP_CODE" | grep -qE "^(200|201|202)$"; then
+        log_success "API endpoint is functional (HTTP $HTTP_CODE)"
+        return 0
+    else
+        log_error "API endpoint returned HTTP $HTTP_CODE"
+        if [ -n "$RESPONSE_BODY" ]; then
+            echo ""
+            echo "Response body:"
+            echo "$RESPONSE_BODY" | head -20
+            echo ""
+        fi
+        log_error "API is not functional - aborting load test"
+        log_info "Check application logs for errors"
         exit 1
     fi
-
-    log_success "Application is running"
 }
 
 check_postgres() {
@@ -123,6 +179,92 @@ clean_database() {
     log_success "Database cleaned"
 }
 
+run_warmup_test() {
+    log_info "Running warmup test: 10 TPS for 20 seconds (200 requests)..."
+
+    local WARMUP_DIR="$OUTPUT_DIR/warmup"
+    mkdir -p "$WARMUP_DIR"
+
+    # Create warmup request body
+    cat > "$WARMUP_DIR/body.json" <<EOF
+{"username":"warmup-test-user"}
+EOF
+
+    # Generate warmup targets
+    awk -v url="$APP_URL" \
+        -v timestamp="warmup-$TIMESTAMP" \
+        -v body="$WARMUP_DIR/body.json" \
+        'BEGIN {
+            for (i = 1; i <= 200; i++) {
+                printf "POST %s/commands/CreateUser\n", url
+                printf "Content-Type: application/json\n"
+                printf "Idempotency-Key: warmup-%s-%d\n", timestamp, i
+                printf "@%s\n\n", body
+            }
+        }' > "$WARMUP_DIR/targets.txt"
+
+    # Run warmup load test
+    vegeta attack \
+        -targets="$WARMUP_DIR/targets.txt" \
+        -rate="10/s" \
+        -duration="20s" \
+        -timeout=10s \
+        > "$WARMUP_DIR/results.bin"
+
+    # Generate warmup report
+    vegeta report "$WARMUP_DIR/results.bin" > "$WARMUP_DIR/report.txt"
+
+    log_success "Warmup test completed"
+}
+
+verify_warmup_results() {
+    log_info "Waiting 20 seconds for warmup processing to complete..."
+    sleep 20
+
+    log_info "Verifying warmup test results..."
+
+    # Check for errors in warmup
+    local WARMUP_REPORT=$(cat "$OUTPUT_DIR/warmup/report.txt")
+    local WARMUP_SUCCESS=$(echo "$WARMUP_REPORT" | grep "Success" | awk '{print $3}')
+    local WARMUP_ERRORS=$(echo "$WARMUP_REPORT" | grep "Error Set" -A 10)
+
+    # Check database for failed commands or DLQ entries
+    local CMD_FAILED=$(docker exec "$POSTGRES_CONTAINER" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -c \
+        "SELECT COUNT(*) FROM command WHERE status = 'FAILED';" | tr -d '[:space:]')
+    local DLQ_COUNT=$(docker exec "$POSTGRES_CONTAINER" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -t -c \
+        "SELECT COUNT(*) FROM command_dlq;" | tr -d '[:space:]')
+
+    echo ""
+    echo "Warmup Test Results:"
+    echo "  Success Rate: $WARMUP_SUCCESS"
+    echo "  Failed Commands: $CMD_FAILED"
+    echo "  DLQ Entries: $DLQ_COUNT"
+    echo ""
+
+    # Check if warmup was clean
+    if [ "$WARMUP_SUCCESS" != "100.00%" ] || [ "$CMD_FAILED" != "0" ] || [ "$DLQ_COUNT" != "0" ]; then
+        log_error "Warmup test failed! System is not healthy."
+        echo ""
+        echo "Error details:"
+        if [ "$WARMUP_SUCCESS" != "100.00%" ]; then
+            echo "  - HTTP success rate: $WARMUP_SUCCESS (expected 100.00%)"
+            echo ""
+            echo "$WARMUP_ERRORS"
+        fi
+        if [ "$CMD_FAILED" != "0" ]; then
+            echo "  - Failed commands in database: $CMD_FAILED"
+        fi
+        if [ "$DLQ_COUNT" != "0" ]; then
+            echo "  - Dead letter queue entries: $DLQ_COUNT"
+        fi
+        echo ""
+        log_error "Aborting full load test. Please check the system health."
+        exit 1
+    fi
+
+    log_success "Warmup test passed - system is healthy"
+}
+
 generate_vegeta_targets() {
     log_info "Generating $TOTAL_REQUESTS vegeta targets..."
 
@@ -133,20 +275,20 @@ generate_vegeta_targets() {
 {"username":"vegeta-load-user"}
 EOF
 
-    # Generate targets file
-    > "$OUTPUT_DIR/targets.txt"
-
-    for i in $(seq 1 $TOTAL_REQUESTS); do
-        # Use nanosecond timestamp + counter for unique idempotency keys
-        NANOS=$(date +%s%N)
-        cat >> "$OUTPUT_DIR/targets.txt" <<EOF
-POST ${APP_URL}/commands/CreateUser
-Content-Type: application/json
-Idempotency-Key: loadtest-${TIMESTAMP}-${i}-${NANOS}
-@${OUTPUT_DIR}/body.json
-
-EOF
-    done
+    # Generate targets file using awk (MUCH faster than loop)
+    # This generates all targets in one shot
+    awk -v url="$APP_URL" \
+        -v timestamp="$TIMESTAMP" \
+        -v body="$OUTPUT_DIR/body.json" \
+        -v total="$TOTAL_REQUESTS" \
+        'BEGIN {
+            for (i = 1; i <= total; i++) {
+                printf "POST %s/commands/CreateUser\n", url
+                printf "Content-Type: application/json\n"
+                printf "Idempotency-Key: loadtest-%s-%d\n", timestamp, i
+                printf "@%s\n\n", body
+            }
+        }' > "$OUTPUT_DIR/targets.txt"
 
     log_success "Generated $TOTAL_REQUESTS unique targets"
 }
@@ -446,7 +588,18 @@ main() {
     check_app_running
     check_postgres
 
-    # Clean slate
+    # Verify API is working with a single test request
+    verify_api_working
+
+    # Clean slate for warmup
+    clean_database
+
+    # Run warmup test to verify system health
+    run_warmup_test
+    verify_warmup_results
+
+    # Clean database again before full run (warmup test passed)
+    log_info "Warmup passed - cleaning database for full test run..."
     clean_database
 
     # Prepare test
@@ -457,6 +610,29 @@ main() {
 
     # Generate reports
     generate_reports
+
+    # Wait for async processing to complete before querying database
+    # Default: 30 seconds, can be overridden with PROCESSING_WAIT_TIME env var
+    local WAIT_TIME=${PROCESSING_WAIT_TIME:-30}
+    if [ "$WAIT_TIME" -gt 0 ]; then
+        log_info "Waiting ${WAIT_TIME} seconds for async processing to complete..."
+        echo ""
+        echo "  This allows the outbox sweep job and command consumers"
+        echo "  to process the backlog before generating database reports."
+        echo ""
+
+        # Show progress every 30 seconds
+        local elapsed=0
+        while [ $elapsed -lt $WAIT_TIME ]; do
+            local remaining=$((WAIT_TIME - elapsed))
+            echo -ne "  ⏳ Processing... ${remaining}s remaining\r"
+            sleep 30
+            elapsed=$((elapsed + 30))
+        done
+        echo -ne "\n"
+        log_success "Processing wait complete"
+    fi
+
     query_database_stats
     generate_markdown_report
 

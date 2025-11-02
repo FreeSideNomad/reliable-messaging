@@ -3,17 +3,16 @@ micronaut:
     name: reliable-single
   server:
     port: 8080
-    # Thread pool configuration for very high throughput (2000+ TPS)
+    # Thread pool configuration - reasonable defaults for JDBC blocking operations
     thread-selection: AUTO
     netty:
       # Worker threads - handles I/O operations
-      # Increased to 1000 for very high load scenarios (4x previous 200)
+      # For JDBC blocking operations, high thread count for 1000+ TPS
       worker:
-        threads: ${NETTY_WORKER_THREADS:1000}
+        threads: ${NETTY_WORKER_THREADS:2000}
       # Parent threads - accepts connections
-      # Increased to 32 for better connection acceptance (4x previous 8)
       parent:
-        threads: ${NETTY_PARENT_THREADS:32}
+        threads: ${NETTY_PARENT_THREADS:16}
       # Buffer sizes for better throughput
       max-initial-line-length: 8192
       max-header-size: 16384
@@ -30,15 +29,16 @@ micronaut:
 
 datasources:
   default:
+    enabled: true
     url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:reliable}
     username: ${POSTGRES_USER:postgres}
     password: ${POSTGRES_PASSWORD:postgres}
     driverClassName: org.postgresql.Driver
     # HikariCP connection pool configuration
     # Formula: (core_count × 2) + effective_spindle_count
-    # For very high load: 200-400 connections (4x increased for 2000+ TPS)
-    maximum-pool-size: ${HIKARI_MAX_POOL_SIZE:400}
-    minimum-idle: ${HIKARI_MIN_IDLE:200}
+    # For very high load: 2000 connections for 650 TPS with 2000 threads
+    maximum-pool-size: ${HIKARI_MAX_POOL_SIZE:2000}
+    minimum-idle: ${HIKARI_MIN_IDLE:400}
     # Connection timeout
     connection-timeout: 30000
     # Idle timeout (10 minutes)
@@ -86,7 +86,7 @@ messaging:
 timeout:
   command-lease: ${COMMAND_LEASE_DURATION:5m}    # How long a command is leased for processing
   max-backoff: ${MAX_BACKOFF_DURATION:5m}        # Maximum backoff time for outbox retries
-  sync-wait: ${SYNC_WAIT_DURATION:1s}            # HTTP sync wait for command response (0 = fully async)
+  sync-wait: ${SYNC_WAIT_DURATION:0s}            # HTTP sync wait for command response (0 = fully async)
   outbox-batch-size: ${OUTBOX_BATCH_SIZE:2000}   # Outbox relay batch size (4x increased from 500)
 
 # MQ configuration

@@ -1,129 +1,126 @@
 package com.acme.reliable.pg;
 
 import com.acme.reliable.spi.OutboxStore;
-import io.micronaut.data.connection.ConnectionOperations;
+import com.acme.reliable.core.Jsons;
+import io.micronaut.transaction.TransactionOperations;
+import io.micronaut.transaction.annotation.Transactional;
 import jakarta.inject.Singleton;
 import java.sql.*;
 import java.util.*;
 
+/**
+ * OutboxStore implementation using hybrid approach:
+ * - Repository for simple updates (markPublished, reschedule)
+ * - Manual JDBC for complex RETURNING queries (claim operations)
+ * - TransactionOperations ensures all operations join existing transactions
+ */
 @Singleton
 public class PgOutboxStore implements OutboxStore {
-    private final ConnectionOperations<Connection> connectionOps;
+    private final OutboxRepository repository;
+    private final TransactionOperations<Connection> transactionOps;
+    private final String hostname;
 
-    public PgOutboxStore(ConnectionOperations<Connection> connectionOps) {
-        this.connectionOps = connectionOps;
+    public PgOutboxStore(OutboxRepository repository, TransactionOperations<Connection> transactionOps) {
+        this.repository = repository;
+        this.transactionOps = transactionOps;
+        try {
+            this.hostname = java.net.InetAddress.getLoopbackAddress().getHostName();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to get hostname", e);
+        }
     }
 
     @Override
     public UUID addReturningId(OutboxRow r) {
-        return connectionOps.executeWrite(status -> {
-            try {
-                var id = r.id() != null ? r.id() : UUID.randomUUID();
-                try (var ps = status.getConnection().prepareStatement(
-                    "insert into outbox(id,category,topic,key,type,payload,headers,status,attempts) values (?,?,?,?,?,?::jsonb,?::jsonb,'NEW',0)")) {
-                    ps.setObject(1, id);
-                    ps.setString(2, r.category());
-                    ps.setString(3, r.topic());
-                    ps.setString(4, r.key());
-                    ps.setString(5, r.type());
-                    ps.setString(6, r.payload());
-                    ps.setString(7, com.acme.reliable.core.Jsons.toJson(r.headers()));
-                    ps.executeUpdate();
-                }
-                return id;
-            } catch(SQLException e) {
-                throw new RuntimeException(e);
-            }
-        });
+        var id = r.id() != null ? r.id() : UUID.randomUUID();
+        String headersJson = Jsons.toJson(r.headers());
+
+        return repository.addReturningId(
+            id,
+            r.category(),
+            r.topic(),
+            r.key(),
+            r.type(),
+            r.payload(),
+            headersJson
+        );
     }
 
     @Override
     public Optional<OutboxRow> claimOne(UUID id) {
-        return connectionOps.executeWrite(status -> {
-            try (var ps = status.getConnection().prepareStatement(
-                "update outbox set status='CLAIMED', claimed_by=? where id=? and status='NEW' returning id,category,topic,key,type,payload,headers,attempts")) {
-                ps.setString(1, java.net.InetAddress.getLoopbackAddress().getHostName());
-                ps.setObject(2, id);
-                var rs = ps.executeQuery();
-                if (rs.next()) {
-                    String headersJson = rs.getString(7);
-                    Map<String,String> headers = headersJson != null ? com.acme.reliable.core.Jsons.fromJson(headersJson, Map.class) : Map.of();
-                    var row = new OutboxRow(
-                        (UUID)rs.getObject(1),
-                        rs.getString(2),
-                        rs.getString(3),
-                        rs.getString(4),
-                        rs.getString(5),
-                        rs.getString(6),
-                        headers,
-                        rs.getInt(8)
-                    );
-                    return Optional.of(row);
+        // Use current transaction's connection if available
+        return transactionOps.findTransactionStatus()
+            .map(status -> {
+                try {
+                    Connection conn = (Connection) status.getConnection();
+                    try (var ps = conn.prepareStatement(
+                        "UPDATE outbox SET status='CLAIMED', claimed_by=? WHERE id=? AND status='NEW' " +
+                        "RETURNING id, category, topic, key, type, payload, headers, attempts")) {
+                        ps.setString(1, hostname);
+                        ps.setObject(2, id);
+                        var rs = ps.executeQuery();
+                        if (rs.next()) {
+                            return Optional.of(mapRow(rs));
+                        }
+                        return Optional.<OutboxRow>empty();
+                    }
+                } catch (SQLException e) {
+                    throw new RuntimeException("Failed to claim outbox entry", e);
                 }
-                return Optional.empty();
-            } catch(SQLException e) {
-                throw new RuntimeException(e);
-            }
-        });
+            })
+            .orElse(Optional.empty());
     }
 
     @Override
     public List<OutboxRow> claim(int max, String claimer) {
-        return connectionOps.executeWrite(status -> {
-            try {
-                var ps = status.getConnection().prepareStatement(
-                    "with c as (select id from outbox where status='NEW' and (next_at is null or next_at<=now()) order by created_at limit ? for update skip locked) " +
-                    "update outbox o set status='CLAIMED', claimed_by=?, attempts=o.attempts from c where o.id=c.id returning o.id,o.category,o.topic,o.key,o.type,o.payload,o.headers,o.attempts");
-                ps.setInt(1, max);
-                ps.setString(2, claimer);
-                var rs = ps.executeQuery();
-                var out = new ArrayList<OutboxRow>();
-                while(rs.next()) {
-                    String headersJson = rs.getString(7);
-                    Map<String,String> headers = headersJson != null ? com.acme.reliable.core.Jsons.fromJson(headersJson, Map.class) : Map.of();
-                    out.add(new OutboxRow(
-                        (UUID)rs.getObject(1),
-                        rs.getString(2),
-                        rs.getString(3),
-                        rs.getString(4),
-                        rs.getString(5),
-                        rs.getString(6),
-                        headers,
-                        rs.getInt(8)
-                    ));
+        // Use current transaction's connection if available
+        return transactionOps.findTransactionStatus()
+            .map(status -> {
+                try {
+                    Connection conn = (Connection) status.getConnection();
+                    try (var ps = conn.prepareStatement(
+                        "WITH c AS (SELECT id FROM outbox WHERE status='NEW' AND (next_at IS NULL OR next_at <= NOW()) " +
+                        "ORDER BY created_at LIMIT ? FOR UPDATE SKIP LOCKED) " +
+                        "UPDATE outbox o SET status='CLAIMED', claimed_by=?, attempts=o.attempts FROM c WHERE o.id=c.id " +
+                        "RETURNING o.id, o.category, o.topic, o.key, o.type, o.payload, o.headers, o.attempts")) {
+                        ps.setInt(1, max);
+                        ps.setString(2, claimer);
+                        var rs = ps.executeQuery();
+                        List<OutboxRow> result = new ArrayList<>();
+                        while (rs.next()) {
+                            result.add(mapRow(rs));
+                        }
+                        return result;
+                    }
+                } catch (SQLException e) {
+                    throw new RuntimeException("Failed to claim outbox batch", e);
                 }
-                return out;
-            } catch(SQLException e) {
-                throw new RuntimeException(e);
-            }
-        });
+            })
+            .orElseGet(ArrayList::new);
+    }
+
+    private OutboxRow mapRow(ResultSet rs) throws SQLException {
+        String headersJson = rs.getString(7);
+        Map<String, String> headers = headersJson != null ? Jsons.fromJson(headersJson, Map.class) : Map.of();
+        return new OutboxRow(
+            (UUID) rs.getObject(1),
+            rs.getString(2),
+            rs.getString(3),
+            rs.getString(4),
+            rs.getString(5),
+            rs.getString(6),
+            headers,
+            rs.getInt(8)
+        );
     }
 
     @Override
     public void markPublished(UUID id) {
-        exec("update outbox set status='PUBLISHED', published_at=now() where id=?", ps -> {
-            ps.setObject(1, id);
-        });
+        repository.markPublished(id);
     }
 
     @Override
     public void reschedule(UUID id, long backoffMs, String err) {
-        exec("update outbox set status='NEW', next_at=now()+ (?||' milliseconds')::interval, attempts=attempts+1, last_error=? where id=?", ps -> {
-            ps.setLong(1, backoffMs);
-            ps.setString(2, err);
-            ps.setObject(3, id);
-        });
-    }
-
-    private void exec(String sql, PgCommandStore.SqlApplier a) {
-        connectionOps.executeWrite(status -> {
-            try (var ps = status.getConnection().prepareStatement(sql)) {
-                a.apply(ps);
-                ps.executeUpdate();
-                return null;
-            } catch(SQLException e) {
-                throw new RuntimeException(e);
-            }
-        });
+        repository.reschedule(id, backoffMs, err);
     }
 }
